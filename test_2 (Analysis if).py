@@ -1,10 +1,9 @@
 import random
 import sys
-from itertools import zip_longest
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QHBoxLayout, QComboBox,
-                             QLabel, QLineEdit, QGridLayout, QHeaderView, QTabWidget, QWidget, QTableWidget,
-                             QVBoxLayout,
-                             QTableWidgetItem, QMessageBox, QFileDialog, QGroupBox, QToolTip, QScrollArea)
+from itertools import zip_longest, accumulate
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton,
+                             QLineEdit, QGridLayout, QHeaderView, QTabWidget, QWidget, QTableWidget,
+                             QTableWidgetItem, QMessageBox, QFileDialog, QScrollArea)
 from PyQt5.QtCore import Qt, QSettings
 import pyqtgraph as pg
 import numpy as np
@@ -15,7 +14,104 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from reportlab.pdfgen import canvas
 import math
 
+from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
+                             QCheckBox, QSpinBox, QComboBox, QDialogButtonBox)
 
+
+class WhatIfDialog(QDialog):
+    def __init__(self, original_values, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Анализ \"что если\"")
+
+        self.original_values = original_values
+        self.scenario_widgets = {}  # Словарь для хранения виджетов сценариев
+
+        # UI элементы для выбора параметров
+        self.create_parameter_groupboxes()
+
+        # UI элементы для выбора критерия
+        self.criterion_combobox = QComboBox()
+        self.criterion_combobox.addItems(["Максимум спасённых", "Минимум пострадавших", "Минимум времени"])
+        criterion_layout = QHBoxLayout()
+        criterion_layout.addWidget(QLabel("Критерий:"))
+        criterion_layout.addWidget(self.criterion_combobox)
+
+        # Кнопки OK/Cancel
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+
+        # Основной layout
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(self.parameters_groupbox)
+        main_layout.addLayout(criterion_layout)
+        main_layout.addWidget(button_box)
+        self.setLayout(main_layout)
+
+    def create_parameter_groupboxes(self):
+        self.parameters_groupbox = QGroupBox("Параметры сценариев")
+        parameters_layout = QVBoxLayout()
+
+        parameter_definitions = {
+            "stage_1_time": ("Время прибытия 1-го эшелона (час)", [1, 2, 5]),
+            "stage_2_time": ("Время прибытия 2-го эшелона (час)", [1, 2, 5]),
+            "stage_3_time": ("Время прибытия 3-го эшелона (час)", [1, 2, 5]),
+            "stage_1_count": ("Число спасателей 1-го эшелона (чел)", [0.5, 2]),
+            "stage_2_count": ("Число спасателей 2-го эшелона (чел)", [0.5, 2]),
+            "stage_3_count": ("Число спасателей 3-го эшелона (чел)", [0.5, 2])
+        }
+
+        for param_name, (param_label, multipliers) in parameter_definitions.items():
+            checkbox = QCheckBox(param_label)
+            self.scenario_widgets[param_name] = {
+                "checkbox": checkbox,
+                "spin_boxes": []
+            }
+
+            hbox = QHBoxLayout()
+            hbox.addWidget(checkbox)
+
+            for multiplier in multipliers:
+                spin_box = QSpinBox()
+                spin_box.setRange(-10, 10)
+                # Исправление: просто используем multiplier
+                spin_box.setValue(int(multiplier))
+                spin_box.setEnabled(False)
+                checkbox.stateChanged.connect(lambda state, sb=spin_box: sb.setEnabled(state == Qt.Checked))
+                hbox.addWidget(spin_box)
+                self.scenario_widgets[param_name]["spin_boxes"].append(spin_box)
+
+            parameters_layout.addLayout(hbox)
+
+        self.parameters_groupbox.setLayout(parameters_layout)
+
+    def get_scenarios(self):
+        scenarios = [
+            {"label": "Базовый сценарий"}  # Базовый сценарий без изменений
+        ]
+
+        for param_name, widgets in self.scenario_widgets.items():
+            if widgets["checkbox"].isChecked():
+                for spin_box in widgets["spin_boxes"]:
+                    # Создаем новый сценарий с измененным параметром
+                    new_scenario = {
+                        "label": f"Изменение {param_name} на {spin_box.value() * 0.1 if isinstance(spin_box.value(), float) else spin_box.value()}"}
+                    new_scenario[param_name] = self.original_values[param_name] * (
+                        spin_box.value() * 0.1 if isinstance(spin_box.value(), float) else spin_box.value())
+                    scenarios.append(new_scenario)
+
+        return scenarios
+
+    def get_criterion(self):
+        criterion_text = self.criterion_combobox.currentText()
+        if criterion_text == "Максимум спасённых":
+            return "rescue"  # Ключ для доступа к данным о спасённых
+        elif criterion_text == "Минимум пострадавших":
+            return "num_fatalities"  # Ключ для доступа к данным о пострадавших
+        elif criterion_text == "Минимум времени":
+            return "time_total"  # Ключ для доступа к данным о времени операции
+        else:
+            return None
 class BuildingData:
     def __init__(self, height, length, width, debris_volume, method_name, method_power):
         self.height = height
@@ -102,9 +198,26 @@ def calculate_data(height, width, length, k, framework_building, method_name, de
                           time_esh_1,
                           time_esh_2, time_esh_3, width, length, number_surv))
 
+        print("Результат WorkLoad_func:")
+        print(f"  workload: {workload}")
+        print(f"  rescue: {rescue}")
+        print(f"  group_esh: {group_esh}")
+        print(f"  group_min: {group_min}")
+        print(f"  cumulativeWorks: {cumulativeWorks}")
+        print(f"  landslide_height: {landslide_height}")
+        print(f"  sublists: {sublists}")
+
         PeopleTrapped, TotVol_m3, workreq, ast_time, koff_lum = PeopleTrapped_func(time, landslide_height, surviv,
                                                                                    num_fatalities, rescue, workload,
                                                                                    sublists, tempa)
+
+        print("Результат PeopleTrapped_func:")
+        print(f"  PeopleTrapped: {PeopleTrapped}")
+        print(f"  TotVol_m3: {TotVol_m3}")
+        print(f"  workreq: {workreq}")
+        print(f"  ast_time: {ast_time}")
+        print(f"  koff_lum: {koff_lum}")
+
         average, group_cnt_sort = dist_func(workreq, surviv)
         update_table(average)
         return workload, PeopleTrapped, TotVol_m3, workreq, rescue, ast_time, koff_lum
@@ -116,22 +229,24 @@ def calculate_data(height, width, length, k, framework_building, method_name, de
 
 def WorkLoad_func(height, k, framework_building, method_name, method_power, time, esh_1, esh_2, esh_3, time_esh_1,
                   time_esh_2, time_esh_3, width, length, number_surv):
-
-    landslide_height = (height * framework_building) / (100 + (height * k))
-    debris_volume = 1.25 * landslide_height * number_surv
-    buildings.append(BuildingData(height, length, width, debris_volume, method_name, method_power))
-
-    area_value = width * length
-    group_cnt = int(np.ceil((2 * area_value) / (3.2 * 7)))
-    group_cnt_list.append(group_cnt)
-    area.append(area_value)
-
-    group_esh = np.round(np.array([esh_1, esh_2, esh_3]) / 7).astype(int)
-    group_min = np.minimum(np.round(np.array([esh_1, esh_2, esh_3]) / 7), group_esh).astype(int)
-
+    landslide_height = round((height * framework_building) / (100 + (height * k)), 2)
+    debris_volume = float(round(1.25 * landslide_height * number_surv, 2))
+    buildings.append([height, length, width, debris_volume, method_name, method_power])
+    cumulativeWorks, sublists, current_sublist, workloads, rescue = [], [], [], [], []
+    for area_value in [width * length]:
+        group_cnt, i = 0, 1
+        while (i * 3.2 * 7) / 2 < area_value:
+            group_cnt += 1
+            i += 1
+        group_cnt = group_cnt
+        group_cnt_list.append(group_cnt)
+    area.append(width * length)
+    print(area)
+    # Заполнение списка group_esh
+    group_esh = [round(value / 7) for value in [esh_1, esh_2, esh_3]]
+    group_min = [min(round(e / 7), group_esh[index]) for index, e in enumerate([esh_1, esh_2, esh_3][:len(group_esh)])]
     free_group = [group_esh[0] - group_cnt_list[0]]
-    cnt_index, esh_index, cnt_esh_index, sum_group_esh = 1, 1, 0, np.sum(group_esh)
-
+    cnt_index, esh_index, cnt_esh_index, sum_group_esh = 1, 1, 0, sum(group_esh)
     while cnt_index < len(group_cnt_list):
         last_value = free_group[-1]
         if last_value < 0:
@@ -150,8 +265,6 @@ def WorkLoad_func(height, k, framework_building, method_name, method_power, time
     if free_group[-1] < 0:
         cnt_index = 1
 
-    sublists = []
-    current_sublist = []
     for value in free_group:
         if value >= 0:
             current_sublist.append(value)
@@ -163,38 +276,78 @@ def WorkLoad_func(height, k, framework_building, method_name, method_power, time
         sublists.append(current_sublist)
 
     free_group = [num for num in free_group if num >= 0][:len(group_cnt_list)]
-    cumulativeWorks = []
-    for group_index, group_cnt in enumerate(group_cnt_list):
-        cumulativeWork = [(free_group[group_index - 1] * 7) / 2 if group_index > 0 else 0]
-        sum_esh = 0
-        for i, esh in enumerate(group_esh):
-            sum_esh += esh
-            if sum_esh <= group_cnt:
-                cumulativeWork.append(cumulativeWork[-1] + (group_min[i] * 7) / 2)
-            elif sum_esh - esh <= group_cnt:
-                cumulativeWork.append((group_cnt * 7) / 2)
-                break
-        cumulativeWorks.append(cumulativeWork[1:])
 
-    workloads = []
+    sum_esh, cumulativeWork = 0, [0]  # Начальное значение для кумулятивной суммы первого здания
+
+    for i, esh in enumerate(group_esh):
+        sum_esh += esh
+        if sum_esh <= group_cnt:
+            cumulativeWork.append(cumulativeWork[-1] + (group_min[i] * 7) / 2)
+        elif sum_esh - esh <= group_cnt:
+            cumulativeWork.append((group_cnt * 7) / 2)
+            break
+
+    cumulativeWorks.append(cumulativeWork[1:])  # Исключаем изначальный ноль
+
+    # Начинаем с индекса 1
+    for group_index, group_cnt in enumerate(group_cnt_list[1:], start=1):  # Начинаем с индекса 1
+        # Вычисляем начальное значение из free_group
+        initial_value = (free_group[group_index - 1] * 7) / 2
+        cumulativeWork = [initial_value]
+
+        for i, esh in enumerate(group_esh):
+            if sum(group_esh) <= group_cnt:
+                next_value = sum(group_esh) * 7 / 2
+                cumulativeWork[0] = max(initial_value, next_value)
+                print(f"Сработала стадия {i + 4}")
+                break
+            elif sum(group_esh) - esh >= group_cnt:
+                next_value = group_cnt * 7 / 2
+                cumulativeWork[0] = max(initial_value, next_value)
+                print(f"Сработала стадия {i + 4}")
+                break
+
+        cumulativeWorks.append(cumulativeWork)  # Добавление результатов в список
+
+    for work in cumulativeWorks:
+        print(work)
+
     for index, cumulativeWork in enumerate(cumulativeWorks):
-        workload = np.zeros(time)
+        # Инициализация рабочей нагрузки нулями для текущего списка
+        workload = [0] * time  # Создает список с 'time' количеством нулей
+        # Создание intensity_ranges для текущего списка
         intensity_ranges = [
             (int(time_esh_1), int(time_esh_2), cumulativeWork[0] if len(cumulativeWork) > 0 else 0),
             (int(time_esh_2), int(time_esh_3), cumulativeWork[1] if len(cumulativeWork) > 1 else 0),
             (int(time_esh_3), time, cumulativeWork[2] if len(cumulativeWork) > 2 else 0)
         ]
+
+        # Обновление workload для каждого диапазона в intensity_ranges
         for start, end, intensity in intensity_ranges:
-            workload[start:end] = intensity
-
+            for time_stamp in range(start, end):
+                workload[time_stamp] = intensity
+        # Обрезать список с конца, удаляя нули
+        while workload and workload[-1] == 0:
+            workload.pop()
+            # Если в cumulativeWork меньше трех значений, продолжаем последнее значение до number_surv
         if len(cumulativeWork) < 3 and len(workload) < number_surv:
-            workload = np.concatenate((workload, np.full(number_surv - len(workload), workload[-1] if workload.size > 0 else 0)))
-
+            if workload:
+                workload.extend([workload[-1]] * (number_surv - len(workload)))
+            else:
+                # Если список workload пустой, нужно инициализировать его некоторым значением
+                # Это значение зависит от вашей бизнес-логики
+                initial_value = 0
+                workload.extend([initial_value] * number_surv)
+        # Добавление обработанного списка workload в итоговый список workloads
         workloads.append(workload)
-
-    rescue = []
-    for i in np.cumsum(workloads[-1]):
-        value = min(round(i / ((debris_volume * 6.8) / number_surv)), number_surv) if number_surv != 0 else 0
+    # Вычисляем значения для списка rescue и останавливаемся, когда достигаем number_surv
+    for i in accumulate(workloads[-1]):
+        if number_surv != 0:
+            value = min(round(i / ((float(debris_volume) * 6.8) / number_surv)), number_surv)
+        else:
+            # Обработка случая, когда number_surv равно нулю
+            # Например, можно присвоить переменной value некоторое значение по умолчанию
+            value = 0
         rescue.append(value)
         if value >= number_surv:
             break
@@ -213,9 +366,9 @@ def PeopleTrapped_func(time, landslide_height, rescue, num_fatalities, surviv, w
                      if math.ceil(float(rescue[i]) - float(num_fatalities[i]) - float(surviv[i])) >= 0]
     TotVol_m3 = [round(1.25 * landslide_height * PeopleTrapped[i], 2) for i in
                  range(min(time, len(PeopleTrapped)))]
-    workreq = [int(float(TotVol_m3[i]) * 6.8 * float(koff_lum[i]) * float(tempa)) for i in range(len(TotVol_m3))]
+    workreq = [int(float(TotVol_m3[i]) * 6.8 * tempa * float(koff_lum[i])) for i in range(len(TotVol_m3))]
+    print("workreq", workreq)
     min_length = min(len(workreq), len(workload))
-    print(min_length, workreq, workload)
     # Проверяем, существует ли список и является ли первый элемент списка списком
     if not final or not isinstance(final[0], list):
         final.append([])
@@ -323,23 +476,21 @@ def update_table(average):
     # Сначала отключим обновление виджета, чтобы избежать лишних перерисовок
     table_min.setSortingEnabled(False), table_min.blockSignals(True), table_min.setUpdatesEnabled(False)
     # Сортировка данных
-    combined_data = sorted(zip(buildings, average), key=lambda x: (x[1], x[0].debris_volume), reverse=True)
+    combined_data = sorted(zip(buildings, average), key=lambda x: (x[1], x[0][3]), reverse=True)
     table_min.setRowCount(len(combined_data))
 
     # Заполнение таблицы данными
     for row, (building, dist) in enumerate(combined_data):
         table_min.setItem(row, 0, QTableWidgetItem(f"Здание №{row + 1}"))
-        table_min.setItem(row, 1, QTableWidgetItem(str(building.height)))
-        table_min.setItem(row, 2, QTableWidgetItem(str(building.length)))
-        table_min.setItem(row, 3, QTableWidgetItem(str(building.width)))
-        table_min.setItem(row, 4, QTableWidgetItem(str(round(building.debris_volume, 2))))
-        table_min.setItem(row, 5, QTableWidgetItem(str(building.method_name)))
-        table_min.setItem(row, 6, QTableWidgetItem(str(building.method_power)))
-        table_min.setItem(row, 7, QTableWidgetItem(str(round(dist, 2))))
+        for column, data in enumerate(building):
+            item_data = str(round(data, 2)) if isinstance(data, (int, float)) else str(data)
+            table_min.setItem(row, column + 1, QTableWidgetItem(item_data))
+        table_min.setItem(row, len(building) + 1, QTableWidgetItem(str(round(dist, 2))))
 
     # Включаем обновление виджета после внесения изменений
     table_min.setSortingEnabled(True), table_min.blockSignals(False), table_min.setUpdatesEnabled(True)
     table_min.viewport().update()
+
 
 
 def clear_input_fields(*input_fields):
@@ -349,11 +500,6 @@ def clear_input_fields(*input_fields):
 
 
 def add_building(scenario=None):
-    #if not validate_input():
-    #    # Выводим сообщение об ошибке, если validate_input вернула False
-    #    QMessageBox.warning(window, "Ошибка валидации", "Неверные входные данные.")
-    #    return None, None, None, None, None, None, None, None, None  # Возвращаем None для всех значений
-
     # Применяем изменения из scenario, если он передан
     if scenario:
         for key, value in scenario.items():
@@ -371,42 +517,77 @@ def add_building(scenario=None):
     building_args = subject_methods["buildings"].get(building_combo.currentText())
     disaster_intensity = subject_methods["intensity"].get(values_combo.currentText())
     tempa_args = subject_methods["tempa"].get(tempa_combo.currentText())
-    survival_probability, _ = subject_methods["survivors"].get(subject_combo.currentText(), (0.5, None))
 
-    number_surv = round(
-        math.ceil((get_time_range_result(int(line2.text())) * int(label3.text())) * survival_probability)
-    )
+    number_surv = round(math.ceil((get_time_range_result(int(line2.text() or 0)) * int(label3.text() or 0)) * 0.4))
     surviv = [str(round((-0.16 * math.log1p(i) + 0.9107) * number_surv)) for i in range(time + 1)]
     surviv.insert(0, str(number_surv))
-    num_fatalities = [0] + [str(math.floor(float(surviv[i]) - float(surviv[i + 1]))) for i in
-                            range(len(surviv) - 1)]
-
-    print("Значения в add_building:")  # Выводим значения перед преобразованием
-    print(f"  dimensions: {dimensions}")
-    print(f"  time: {time}")
-    print(f"  stage_values: {stage_values}")
+    num_fatalities = [0] + [str(math.floor(float(surviv[i]) - float(surviv[i + 1]))) for i in range(len(surviv) - 1)]
 
     if building_args:
-        (workload, PeopleTrapped, TotVol_m3, workreq, rescue, ast_time, koff_lum) = (
-            calculate_data(*dimensions, disaster_intensity, *building_args, *survivor_args, surviv, time, *stage_values,
-                           number_surv, num_fatalities, tempa_args))
+        print("Входные данные для calculate_data:")
+        print(f"  height: {dimensions[0]}")
+        print(f"  width: {dimensions[2]}")
+        print(f"  length: {dimensions[1]}")
+        print(f"  k: {disaster_intensity}")
+        print(f"  framework_building: {building_args[0]}")
+        print(f"  method_name: {survivor_args[1]}")
+        print(f"  desruction_full: {survivor_args[0]}")
+        print(f"  method_power: {building_args[1]}")
+        print(f"  surviv: {surviv}")
+        print(f"  time: {time}")
+        print(f"  esh_1: {stage_values[0]}")
+        print(f"  esh_2: {stage_values[1]}")
+        print(f"  esh_3: {stage_values[2]}")
+        print(f"  time_esh_1: {stage_values[3]}")
+        print(f"  time_esh_2: {stage_values[4]}")
+        print(f"  time_esh_3: {stage_values[5]}")
+        print(f"  number_surv: {number_surv}")
+        print(f"  num_fatalities: {num_fatalities}")
+        print(f"  tempa: {tempa_args}")
 
-        table_max.clearContents()
-        table_max.setRowCount(len(TotVol_m3))
+        calculation_result = calculate_data(height=dimensions[0], width=dimensions[2], length=dimensions[1],
+                                            k=disaster_intensity, framework_building=building_args[0],
+                                            method_name=survivor_args[1],
+                                            desruction_full=survivor_args[0], method_power=building_args[1],
+                                            surviv=surviv,
+                                            time=time, esh_1=stage_values[0], esh_2=stage_values[1],
+                                            esh_3=stage_values[2],
+                                            time_esh_1=stage_values[3], time_esh_2=stage_values[4],
+                                            time_esh_3=stage_values[5],
+                                            number_surv=number_surv, num_fatalities=num_fatalities,
+                                            tempa=tempa_args)
 
-        for row_index, values in enumerate(zip(TotVol_m3, PeopleTrapped, surviv, rescue,
-                                               num_fatalities, workload, ast_time, koff_lum, workreq)):
-            set_table_items(table_max, row_index, values)
+        if calculation_result is None:
+            print("calculate_data вернула None")
+        else:
+            (workload, PeopleTrapped, TotVol_m3, workreq, rescue, ast_time, koff_lum) = calculation_result
+            print("calculate_data вернула результат")
 
-        new_tab = QWidget()
-        new_table_widget = copy_table(table_max)
-        new_tab.setLayout(QVBoxLayout())
-        new_tab.layout().addWidget(new_table_widget)
-        tab_index = tabWidget.addTab(new_tab, f"Здание {tabWidget.count()}")
-        tabWidget.setCurrentIndex(tab_index)
+        # Проверяем результат вычислений
+        if calculation_result is not None:
+            (workload, PeopleTrapped, TotVol_m3, workreq, rescue, ast_time, koff_lum) = calculation_result
 
-        # Возвращаем все 9 значений
-        return workload, PeopleTrapped, TotVol_m3, workreq, rescue, ast_time, koff_lum, num_fatalities, surviv
+            table_max.clearContents()
+            table_max.setRowCount(len(TotVol_m3))
+
+            for row_index, values in enumerate(zip(TotVol_m3, PeopleTrapped, surviv, rescue,
+                                                   num_fatalities, workload, ast_time, koff_lum, workreq)):
+                set_table_items(table_max, row_index, values)
+
+            new_tab = QWidget()
+            new_table_widget = copy_table(table_max)
+            new_tab.setLayout(QVBoxLayout())
+            new_tab.layout().addWidget(new_table_widget)
+            tab_index = tabWidget.addTab(new_tab, f"Здание {tabWidget.count()}")
+            tabWidget.setCurrentIndex(tab_index)
+
+            # Возвращаем все 9 значений
+            return workload, PeopleTrapped, TotVol_m3, workreq, rescue, ast_time, koff_lum, num_fatalities, surviv
+
+        else:
+            # Выводим сообщение об ошибке
+            QMessageBox.warning(window, "Ошибка", "Не удалось рассчитать данные для здания. Проверьте входные параметры.")
+            return None, None, None, None, None, None, None, None, None
 
 
 def randomize(line_edits, ranges):
@@ -638,6 +819,11 @@ def analyze_what_if():
         'tempa': tempa_combo.currentText()
     }
     print('список', original_values)
+    # 2. Диалог для выбора сценариев и критерия
+    dialog = WhatIfDialog(original_values)
+    if dialog.exec_() == QDialog.Accepted:
+        scenarios = dialog.get_scenarios()
+        criterion = dialog.get_criterion()
     # Словарь для сопоставления ключей с виджетами
     widgets = {
         'height': height_line,
@@ -655,7 +841,6 @@ def analyze_what_if():
         'destruction_level': subject_combo,
         'tempa': tempa_combo
     }
-
     # 2. Определяем сценарии для анализа
     scenarios = [
         {"label": "Базовый сценарий"},
@@ -664,12 +849,12 @@ def analyze_what_if():
         {"label": "Первый эшелон опоздал на 5 часов", "stage_3_time": min(original_values['stage_3_time'] + 5, 24)},
         {"label": "Удвоенное число спасателей",
          "stage_1_count": min(original_values['stage_1_count'] * 2, 360),
-         "stage_2_count": min(original_values['stage_2_count'] * 2, 200),
+         "stage_2_count": min(original_values['stage_2_count'] * 2, 360),
          "stage_3_count": min(original_values['stage_3_count'] * 2, 360)},
         {"label": "Уменьшенное число спасателей",
-         "stage_1_count": max(original_values['stage_1_count'] // 2, 50),
-         "stage_2_count": max(original_values['stage_2_count'] // 2, 30),
-         "stage_3_count": max(original_values['stage_3_count'] // 2, 70)}
+         "stage_1_count": max(original_values['stage_1_count'] // 2, 40),
+         "stage_2_count": max(original_values['stage_2_count'] // 2, 40),
+         "stage_3_count": max(original_values['stage_3_count'] // 2, 40)}
     ]
 
     # 3. Создаем новую вкладку для результатов анализа
