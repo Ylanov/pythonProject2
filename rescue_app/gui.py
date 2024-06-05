@@ -1,3 +1,4 @@
+# rescue_app/gui.py
 import math
 import random
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton,

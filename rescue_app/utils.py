@@ -1,3 +1,4 @@
+# rescue_app/utils.py
 from PyQt5.QtWidgets import QLabel, QLineEdit, QComboBox, QHBoxLayout, QTableWidget
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
